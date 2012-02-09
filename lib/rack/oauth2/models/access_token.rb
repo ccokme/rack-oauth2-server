@@ -14,6 +14,11 @@ module Rack
             Server.new_instance self, collection.find_one({ :_id=>token, :revoked=>nil })
           end
 
+          # Find AccessToken from refresh_token. Does not return revoked tokens.
+          def from_refresh_token(token)
+            Server.new_instance self, collection.find_one({ :refresh_token=>token, :revoked=>nil })
+          end
+
           # Get an access token (create new one if necessary).
           #
           # You can set optional expiration in seconds. If zero or nil, token
@@ -21,14 +26,24 @@ module Rack
           def get_token_for(identity, client, scope, expires = nil)
             raise ArgumentError, "Identity must be String or Integer" unless String === identity || Integer === identity
             scope = Utils.normalize_scope(scope) & client.scope # Only allowed scope
+            expires_at = if expires && expires != 0
+              Time.now.to_i + expires 
+            else
+              nil
+            end
+
             unless token = collection.find_one({ :identity=>identity, :scope=>scope, :client_id=>client.id, :revoked=>nil })
-              expires_at = Time.now.to_i + expires if expires && expires != 0
               token = { :_id=>Server.secure_random, :identity=>identity, :scope=>scope,
                         :client_id=>client.id, :created_at=>Time.now.to_i,
-                        :expires_at=>expires_at, :revoked=>nil }
+                        :expires_at=>expires_at, :revoked=>nil,
+                        :refresh_token => Server.secure_random }
               collection.insert token
               Client.collection.update({ :_id=>client.id }, { :$inc=>{ :tokens_granted=>1 } })
+            else
+              # Update the expires_at field when token exists.
+              collection.update({ :_id=>token['_id'] }, { '$set' => { :expires_at => expires_at } })
             end
+            
             Server.new_instance self, token
           end
 
@@ -100,6 +115,15 @@ module Rack
         attr_accessor :last_access
         # Timestamp of previous access using this token, rounded up to hour.
         attr_accessor :prev_access
+        # Refresh token of this token, this will generate when token created.
+        attr_accessor :refresh_token
+
+
+        # Make token never expire.
+        def never_expire! expires_in = nil
+          expires = expires_in ? (Time.now.to_i + expires) : nil
+          AccessToken.collection.update({ :_id=>token }, { '$set' => { :expires_at => expires } })
+        end
 
         # Updates the last access timestamp.
         def access!
@@ -123,6 +147,8 @@ module Rack
           # Used to get/revoke access tokens for an identity, also to find and
           # return existing access token.
           collection.create_index [[:identity, Mongo::ASCENDING]]
+
+          collection.create_index [[:refresh_toekn, Mongo::ASCENDING]]
         end
       end
 

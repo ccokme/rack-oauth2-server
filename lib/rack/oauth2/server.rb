@@ -378,12 +378,19 @@ module Rack
             identity = options.authenticator.call(*args)
             raise InvalidGrantError, "Username/password do not match" unless identity
             access_token = AccessToken.get_token_for(identity, client, requested_scope, options.expires_in)
+          when 'refresh_token'
+            # 4.1.4 Refresh Token
+            refresh_token = request.POST["refresh_token"]
+            access_token = AccessToken.from_refresh_token(refresh_token)
+            raise InvalidGrantError, "Refresh token does not exist" unless access_token
+            access_token.never_expire!
           else
             raise UnsupportedGrantType
           end
           logger.info "RO2S: Access token #{access_token.token} granted to client #{client.display_name}, identity #{access_token.identity}" if logger
           response = { :access_token=>access_token.token }
           response[:scope] = access_token.scope.join(" ")
+          response[:refresh_token] = access_token.refresh_token
           return [200, { "Content-Type"=>"application/json", "Cache-Control"=>"no-store" }, [response.to_json]]
           # 4.3.  Error Response
         rescue OAuthError=>error
